@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Video Frame Extractor to ZIP</title>
+    <title>Robust Video Frame & Audio Extractor</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         body {
@@ -43,6 +43,7 @@
             border-radius: 6px;
             box-sizing: border-box;
             font-size: 14px;
+            background: white;
         }
         input[type="file"] {
             background: #fafafa;
@@ -92,8 +93,20 @@
         #status-text {
             font-size: 14px;
             font-weight: 500;
+            line-height: 1.4;
         }
-        /* Hidden video/canvas elements used for processing */
+        .error-box {
+            background-color: #ffebee;
+            color: #c62828;
+            border: 1px solid #ffcdd2;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            display: none;
+        }
         #hidden-video, #hidden-canvas {
             display: none;
         }
@@ -102,9 +115,9 @@
 <body>
 
 <div class="container">
-    <h1>Video Frame Extractor</h1>
+    <h1>Video Frame & Audio Extractor</h1>
     <p style="font-size: 13px; color: #666; margin-top: -10px; margin-bottom: 20px;">
-        Extract video frames into a downloadable ZIP entirely in your browser.
+        Extract media assets locally. If the browser crashes on PNG, switch to JPEG.
     </p>
 
     <div class="form-group">
@@ -112,21 +125,27 @@
         <input type="file" id="video-input" accept="video/*">
     </div>
 
-    <div class="form-group" id="config-section">
+    <div class="form-group">
         <label for="fps-input">Extraction Rate (Frames per second)</label>
         <input type="number" id="fps-input" value="10" min="0.1" max="60" step="0.1">
-        <small style="color:#888; font-size:12px; display:block; margin-top:4px;">
-            E.g., "1" extracts 1 frame per second. "30" extracts 30 frames per second.
-        </small>
+    </div>
+
+    <div class="form-group">
+        <label for="format-input">Image Format</label>
+        <select id="format-input">
+            <option value="image/png">PNG (Lossless, Perfect Quality, VERY Large Files)</option>
+            <option value="image/jpeg">JPEG (Compressed, Light Weight, Safer for Long Videos)</option>
+        </select>
     </div>
 
     <button id="process-btn" disabled>Extract & Download ZIP</button>
 
     <div id="status-container">
-        <div id="status-text">Ready to process...</div>
+        <div id="status-text">Ready...</div>
         <div class="progress-bar-container">
             <div id="progress-bar"></div>
         </div>
+        <div id="error-log" class="error-box"></div>
     </div>
 </div>
 
@@ -136,35 +155,38 @@
 <script>
     const videoInput = document.getElementById('video-input');
     const fpsInput = document.getElementById('fps-input');
+    const formatInput = document.getElementById('format-input');
     const processBtn = document.getElementById('process-btn');
     const statusContainer = document.getElementById('status-container');
     const statusText = document.getElementById('status-text');
     const progressBar = document.getElementById('progress-bar');
+    const errorLog = document.getElementById('error-log');
     const video = document.getElementById('hidden-video');
     const canvas = document.getElementById('hidden-canvas');
     const ctx = canvas.getContext('2d');
 
     let videoUrl = null;
+    let currentFile = null;
 
-    // Triggered when a video is uploaded
     videoInput.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (!file) return;
 
-        // Revoke old URL if existing to save memory
+        currentFile = file;
+        errorLog.style.display = 'none';
+        errorLog.innerText = '';
+        
         if (videoUrl) URL.revokeObjectURL(videoUrl);
-
         videoUrl = URL.createObjectURL(file);
         video.src = videoUrl;
         
         statusContainer.style.display = 'block';
-        statusText.innerText = "Loading video metadata...";
+        statusText.innerText = "Loading video details...";
         processBtn.disabled = true;
     });
 
-    // Once video metadata is loaded, we can fetch duration and dimensions
     video.addEventListener('loadedmetadata', () => {
-        statusText.innerText = `Video loaded. Duration: ${video.duration.toFixed(2)}s (${video.videoWidth}x${video.videoHeight})`;
+        statusText.innerText = `Video loaded (${video.videoWidth}x${video.videoHeight})`;
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         processBtn.disabled = false;
@@ -172,81 +194,143 @@
 
     processBtn.addEventListener('click', async () => {
         const fps = parseFloat(fpsInput.value);
+        const imageFormat = formatInput.value;
+        const extension = imageFormat === 'image/png' ? 'png' : 'jpg';
+
         if (isNaN(fps) || fps <= 0) {
-            alert("Please enter a valid frame rate greater than 0.");
+            alert("Please enter a valid frame rate.");
             return;
         }
 
-        // Setup UI
         processBtn.disabled = true;
         videoInput.disabled = true;
         fpsInput.disabled = true;
+        formatInput.disabled = true;
+        errorLog.style.display = 'none';
 
         const zip = new JSZip();
         const duration = video.duration;
-        const interval = 1 / fps; // Time step between frames
+        const interval = 1 / fps; 
         let currentTime = 0;
         let frameCount = 0;
         
-        // Calculate estimated total frames to process
         const totalFrames = Math.ceil(duration / interval);
 
         try {
+            // STEP 1: AUDIO EXTRACTION
+            statusText.innerText = "Extracting audio track...";
+            progressBar.style.width = "5%";
+            
+            try {
+                const arrayBuffer = await currentFile.arrayBuffer();
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                
+                statusText.innerText = "Converting audio to WAV...";
+                const wavBlob = audioBufferToWav(audioBuffer);
+                zip.file("audio.wav", wavBlob);
+                audioCtx.close();
+            } catch (audioError) {
+                console.warn("Audio extraction skipped:", audioError);
+            }
+
+            // STEP 2: FRAME EXTRACTION
             while (currentTime < duration) {
-                // Seek video to the targeted timestamp
                 video.currentTime = currentTime;
                 
-                // Wait for the browser to finish rendering the frame at this timestamp
                 await new Promise((resolve) => {
                     video.onseeked = resolve;
                 });
 
-                // Paint the current video frame onto the hidden canvas
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                // Convert canvas paint into a JPEG Blob image data
                 const blob = await new Promise((resolve) => {
-                    canvas.toBlob(resolve, 'image/jpeg', 0.85); // 0.85 is JPEG quality
+                    if (imageFormat === 'image/jpeg') {
+                        canvas.toBlob(resolve, 'image/jpeg', 0.9); // 90% quality JPEG
+                    } else {
+                        canvas.toBlob(resolve, 'image/png');
+                    }
                 });
 
-                // Name the image chronologically and add to zip
-                const filename = `frame_${String(frameCount).padStart(5, '0')}.jpg`;
+                if (!blob) throw new Error("Canvas failed to generate an image blob. Browser memory might be full.");
+
+                const filename = `frame_${String(frameCount).padStart(5, '0')}.${extension}`;
                 zip.file(filename, blob);
 
                 frameCount++;
                 currentTime += interval;
 
-                // Update Progress UI
-                const progressPercentage = Math.min((frameCount / totalFrames) * 100, 100);
+                const progressPercentage = 10 + Math.min((frameCount / totalFrames) * 80, 80);
                 progressBar.style.width = `${progressPercentage}%`;
-                statusText.innerText = `Extracting frames: ${frameCount} / ~${totalFrames}`;
+                statusText.innerText = `Extracting ${extension.toUpperCase()} frames: ${frameCount} / ~${totalFrames}`;
             }
 
-            // Generate the ZIP file
-            statusText.innerText = "Packaging frames into ZIP... (This may take a moment)";
-            progressBar.style.width = "100%";
+            // STEP 3: ZIP GENERATION
+            statusText.innerText = "Packaging files into ZIP... (This might freeze temporarily while building)";
+            progressBar.style.width = "95%";
             
-            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            // Generate zip file with no compression to save RAM processing
+            const zipBlob = await zip.generateAsync({ type: 'blob', compression: "STORE" });
 
-            // Trigger Automatic Download
-            statusText.innerText = "Downloading completed ZIP!";
+            progressBar.style.width = "100%";
+            statusText.innerText = "Success! Download starting.";
+            
             const downloadLink = document.createElement('a');
             downloadLink.href = URL.createObjectURL(zipBlob);
-            downloadLink.download = `extracted_frames_${Date.now()}.zip`;
+            downloadLink.download = `media_assets_${Date.now()}.zip`;
             document.body.appendChild(downloadLink);
             downloadLink.click();
             document.body.removeChild(downloadLink);
 
         } catch (error) {
             console.error(error);
-            statusText.innerText = "An error occurred during extraction.";
+            statusText.innerText = "❌ An error occurred during processing.";
+            errorLog.innerText = `Error Details:\n${error.name}: ${error.message}\n\nTroubleshooting Tip: Try lowering your FPS or changing the format to JPEG to reduce RAM consumption.`;
+            errorLog.style.display = 'block';
         } finally {
-            // Reset UI controls
             processBtn.disabled = false;
             videoInput.disabled = false;
             fpsInput.disabled = false;
+            formatInput.disabled = false;
         }
     });
+
+    // --- WAV CONVERSION HELPERS ---
+    function audioBufferToWav(buffer) {
+        let numOfChan = buffer.numberOfChannels, sampleRate = buffer.sampleRate, format = 1, bitDepth = 16;
+        let result = numOfChan === 2 ? interleave(buffer.getChannelData(0), buffer.getChannelData(1)) : buffer.getChannelData(0);
+        let bufferArr = new ArrayBuffer(44 + result.length * 2), view = new DataView(bufferArr);
+        
+        writeString(view, 0, 'RIFF');
+        view.setUint32(4, 36 + result.length * 2, true);
+        writeString(view, 8, 'WAVE');
+        writeString(view, 12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, format, true);
+        view.setUint16(22, numOfChan, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * numOfChan * (bitDepth / 8), true);
+        view.setUint16(32, numOfChan * (bitDepth / 8), true);
+        view.setUint16(34, bitDepth, true);
+        writeString(view, 36, 'data');
+        view.setUint32(40, result.length * 2, true);
+        floatTo16BitPCM(view, 44, result);
+        return new Blob([view], { type: 'audio/wav' });
+    }
+    function interleave(inputL, inputR) {
+        let length = inputL.length + inputR.length, result = new Float32Array(length), index = 0, inputIndex = 0;
+        while (index < length) { result[index++] = inputL[inputIndex]; result[index++] = inputR[inputIndex++]; }
+        return result;
+    }
+    function floatTo16BitPCM(output, offset, input) {
+        for (let i = 0; i < input.length; i++, offset += 2) {
+            let s = Math.max(-1, Math.min(1, input[i]));
+            output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        }
+    }
+    function writeString(view, offset, string) {
+        for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
+    }
 </script>
 
 </body>
