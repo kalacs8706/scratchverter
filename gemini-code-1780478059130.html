@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robust Video Frame & Audio Extractor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
+            padding: 40px 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            background: #fff;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            max-width: 500px;
+            width: 100%;
+        }
+        h1 {
+            font-size: 24px;
+            margin-top: 0;
+            color: #111;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        input[type="file"], input[type="number"], select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 14px;
+            background: white;
+        }
+        input[type="file"] {
+            background: #fafafa;
+            cursor: pointer;
+        }
+        button {
+            width: 100%;
+            padding: 12px;
+            background-color: #0076ff;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #status-container {
+            margin-top: 20px;
+            display: none;
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #eee;
+        }
+        .progress-bar-container {
+            background-color: #e0e0e0;
+            border-radius: 4px;
+            height: 10px;
+            width: 100%;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+        #progress-bar {
+            background-color: #00c853;
+            height: 100%;
+            width: 0%;
+            transition: width 0.1s linear;
+        }
+        #status-text {
+            font-size: 14px;
+            font-weight: 500;
+            line-height: 1.4;
+        }
+        .error-box {
+            background-color: #ffebee;
+            color: #c62828;
+            border: 1px solid #ffcdd2;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            display: none;
+        }
+        #hidden-video, #hidden-canvas {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Video Frame & Audio Extractor</h1>
+    <p style="font-size: 13px; color: #666; margin-top: -10px; margin-bottom: 20px;">
+        Extract media assets locally. If the browser crashes on PNG, switch to JPEG.
+    </p>
+
+    <div class="form-group">
+        <label for="video-input">Select Video File</label>
+        <input type="file" id="video-input" accept="video/*">
+    </div>
+
+    <div class="form-group">
+        <label for="fps-input">Extraction Rate (Frames per second)</label>
+        <input type="number" id="fps-input" value="10" min="0.1" max="60" step="0.1">
+    </div>
+
+    <div class="form-group">
+        <label for="format-input">Image Format</label>
+        <select id="format-input">
+            <option value="image/png">PNG (Lossless, Perfect Quality, VERY Large Files)</option>
+            <option value="image/jpeg">JPEG (Compressed, Light Weight, Safer for Long Videos)</option>
+        </select>
+    </div>
+
+    <button id="process-btn" disabled>Extract & Download ZIP</button>
+
+    <div id="status-container">
+        <div id="status-text">Ready...</div>
+        <div class="progress-bar-container">
+            <div id="progress-bar"></div>
+        </div>
+        <div id="error-log" class="error-box"></div>
+    </div>
+</div>
+
+<video id="hidden-video" preload="auto"></video>
+<canvas id="hidden-canvas"></canvas>
+
+<script>
+    const videoInput = document.getElementById('video-input');
+    const fpsInput = document.getElementById('fps-input');
+    const formatInput = document.getElementById('format-input');
+    const processBtn = document.getElementById('process-btn');
+    const statusContainer = document.getElementById('status-container');
+    const statusText = document.getElementById('status-text');
+    const progressBar = document.getElementById('progress-bar');
+    const errorLog = document.getElementById('error-log');
+    const video = document.getElementById('hidden-video');
+    const canvas = document.getElementById('hidden-canvas');
+    const ctx = canvas.getContext('2d');
+
+    let videoUrl = null;
+    let currentFile = null;
+
+    videoInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        currentFile = file;
+        errorLog.style.display = 'none';
+        errorLog.innerText = '';
+        
+        if (videoUrl) URL.revokeObjectURL(videoUrl);
+        videoUrl = URL.createObjectURL(file);
+        video.src = videoUrl;
+        
+        statusContainer.style.display = 'block';
+        statusText.innerText = "Loading video details...";
+        processBtn.disabled = true;
+    });
+
+    video.addEventListener('loadedmetadata', () => {
+        statusText.innerText = `Video loaded (${video.videoWidth}x${video.videoHeight})`;
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        processBtn.disabled = false;
+    });
+
+    processBtn.addEventListener('click', async () => {
+        const fps = parseFloat(fpsInput.value);
+        const imageFormat = formatInput.value;
+        const extension = imageFormat === 'image/png' ? 'png' : 'jpg';
+
+        if (isNaN(fps) || fps <= 0) {
+            alert("Please enter a valid frame rate.");
+            return;
+        }
+
+        processBtn.disabled = true;
+        videoInput.disabled = true;
+        fpsInput.disabled = true;
+        formatInput.disabled = true;
+        errorLog.style.display = 'none';
+
+        const zip = new JSZip();
+        const duration = video.duration;
+        const interval = 1 / fps; 
+        let currentTime = 0;
+        let frameCount = 0;
+        
+        const totalFrames = Math.ceil(duration / interval);
+
+        try {
+            // STEP 1: AUDIO EXTRACTION
+            statusText.innerText = "Extracting audio track...";
+            progressBar.style.width = "5%";
+            
+            try {
+                const arrayBuffer = await currentFile.arrayBuffer();
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                
+                statusText.innerText = "Converting audio to WAV...";
+                const wavBlob = audioBufferToWav(audioBuffer);
+                zip.file("audio.wav", wavBlob);
+                audioCtx.close();
+            } catch (audioError) {
+                console.warn("Audio extraction skipped:", audioError);
+            }
+
+            // STEP 2: FRAME EXTRACTION
+            while (currentTime < duration) {
+                video.currentTime = currentTime;
+                
+                await new Promise((resolve) => {
+                    video.onseeked = resolve;
+                });
+
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                const blob = await new Promise((resolve) => {
+                    if (imageFormat === 'image/jpeg') {
+                        canvas.toBlob(resolve, 'image/jpeg', 0.9); // 90% quality JPEG
+                    } else {
+                        canvas.toBlob(resolve, 'image/png');
+                    }
+                });
+
+                if (!blob) throw new Error("Canvas failed to generate an image blob. Browser memory might be full.");
+
+                const filename = `frame_${String(frameCount).padStart(5, '0')}.${extension}`;
+                zip.file(filename, blob);
+
+                frameCount++;
+                currentTime += interval;
+
+                const progressPercentage = 10 + Math.min((frameCount / totalFrames) * 80, 80);
+                progressBar.style.width = `${progressPercentage}%`;
+                statusText.innerText = `Extracting ${extension.toUpperCase()} frames: ${frameCount} / ~${totalFrames}`;
+            }
+
+            // STEP 3: ZIP GENERATION
+            statusText.innerText = "Packaging files into ZIP... (This might freeze temporarily while building)";
+            progressBar.style.width = "95%";
+            
+            // Generate zip file with no compression to save RAM processing
+            const zipBlob = await zip.generateAsync({ type: 'blob', compression: "STORE" });
+
+            progressBar.style.width = "100%";
+            statusText.innerText = "Success! Download starting.";
+            
+            const downloadLink = document.createElement('a');
+            downloadLink.href = URL.createObjectURL(zipBlob);
+            downloadLink.download = `media_assets_${Date.now()}.zip`;
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
+
+        } catch (error) {
+            console.error(error);
+            statusText.innerText = "❌ An error occurred during processing.";
+            errorLog.innerText = `Error Details:\n${error.name}: ${error.message}\n\nTroubleshooting Tip: Try lowering your FPS or changing the format to JPEG to reduce RAM consumption.`;
+            errorLog.style.display = 'block';
+        } finally {
+            processBtn.disabled = false;
+            videoInput.disabled = false;
+            fpsInput.disabled = false;
+            formatInput.disabled = false;
+        }
+    });
+
+    // --- WAV CONVERSION HELPERS ---
+    function audioBufferToWav(buffer) {
+        let numOfChan = buffer.numberOfChannels, sampleRate = buffer.sampleRate, format = 1, bitDepth = 16;
+        let result = numOfChan === 2 ? interleave(buffer.getChannelData(0), buffer.getChannelData(1)) : buffer.getChannelData(0);
+        let bufferArr = new ArrayBuffer(44 + result.length * 2), view = new DataView(bufferArr);
+        
+        writeString(view, 0, 'RIFF');
+        view.setUint32(4, 36 + result.length * 2, true);
+        writeString(view, 8, 'WAVE');
+        writeString(view, 12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, format, true);
+        view.setUint16(22, numOfChan, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * numOfChan * (bitDepth / 8), true);
+        view.setUint16(32, numOfChan * (bitDepth / 8), true);
+        view.setUint16(34, bitDepth, true);
+        writeString(view, 36, 'data');
+        view.setUint32(40, result.length * 2, true);
+        floatTo16BitPCM(view, 44, result);
+        return new Blob([view], { type: 'audio/wav' });
+    }
+    function interleave(inputL, inputR) {
+        let length = inputL.length + inputR.length, result = new Float32Array(length), index = 0, inputIndex = 0;
+        while (index < length) { result[index++] = inputL[inputIndex]; result[index++] = inputR[inputIndex++]; }
+        return result;
+    }
+    function floatTo16BitPCM(output, offset, input) {
+        for (let i = 0; i < input.length; i++, offset += 2) {
+            let s = Math.max(-1, Math.min(1, input[i]));
+            output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        }
+    }
+    function writeString(view, offset, string) {
+        for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
+    }
+</script>
+
+</body>
+</html>
